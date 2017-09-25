@@ -12,6 +12,10 @@ import collections
 import warnings
 warnings.filterwarnings("ignore")
 import time
+import inspect
+import random
+import requests
+import json
 
 class time_est():
     def __init__(self, total_len):
@@ -71,124 +75,179 @@ def get_cpu_usage():
             
 class MP():
 
-    def __init__(self, max_restart=10, max_thread=64, penalty=100000000, process_start_duration=0, 
-                 cpu_max=95):
+    def __init__(self, max_thread=64, process_start_duration=0, 
+                 cpu_max=95, servers=[]):
+        self.servers = servers
         self.parameter_list = []
-        self.max_restart = max_restart
         self.max_thread = max_thread
-        self.penalty = penalty
         self.process_start_duration = process_start_duration
         self.cpu_max = cpu_max
-
+        self.run_func = self.local_func
+    
     def give(self,i):
         self.parameter_list.append(i)
         
-    def store(self,value,key):
+    def store(self, key, value):
         self.return_dict[key] = value
     
     def get(self):
         return self.return_dict.copy()
+    
+    def local_func(self, process_num):
+        value = list(self.object_func(*self.parameter_dict[process_num]))
+        self.store(key=process_num, value=value)
         
-    def run(self, object_func, print_flag=True, for_loop=False):
-            
-        parameter_list = self.parameter_list
+    def map_func(self, process_num):
+        code = inspect.getsource(self.object_func)
+        func_name = str(self.object_func.__name__)
+        data_dict = self.list_to_dict(self.parameter_dict[process_num])
+        while 1:
+            try:
+                url = self.servers[process_num % len(self.servers)]
+                dict_data = self.auto_send(url, code, data_dict, func_name)
+                break
+            except Exception as e:
+                print(e)
+                pass
+            time.sleep(0.1)
+
+        value = list(self.dict_to_list(dict_data))
+        self.store(key=process_num, value=value)
+    
+    def run_for_loop(self):
+        self.return_dict = {}
+        self.est = time_est(len(self.parameter_dict.keys()))
+        for process_num in self.parameter_dict:
+            self.local_func(process_num)
+            self.est.check()
+        self.parameter_dict = {}
         
-        name_list = []
-        for i in parameter_list:
-            name_list.append(tuple(i))
-        name_set = name_list[:]
+    def run(self, object_func, mode=1, print_flag=True):
+        self.print_flag = print_flag
+        self.object_func = object_func
+        self.parameter_dict = {}
+        for i in range(len(self.parameter_list)):
+            self.parameter_dict[i] = tuple(self.parameter_list[i])
         
-        if for_loop==False:
-            self.return_dict = Manager().dict()
+
+        if mode==0:
+            self.run_for_loop()
+        elif mode==1:
+            self.run_func = self.local_func
+            self.run_multiprocess()
         else:
-            self.return_dict = collections.defaultdict()
-            est = time_est(len(name_set))
-            for i in name_set:
-                object_func(*i)
-                est.check()
-            return
-        
-        max_restart = self.max_restart
-        max_thread = self.max_thread
-        penalty = self.penalty
-        process_start_duration = self.process_start_duration
-        cpu_max = self.cpu_max
-        return_dict = self.return_dict
-        ETA = ""
-        alive1 = collections.defaultdict(lambda: 1)
-        p1 = collections.defaultdict(lambda: 1)
+            self.run_func = self.map_func
+            self.run_multiprocess()
 
-        total_len = len(name_list)
-        t_save_ref = time.time()
-        if print_flag:
-            print("")
-        original_thread_number = len(multiprocessing.active_children())
-        est = time_est(len(parameter_list))
-        cpu_percent = -1
-        while len(name_set) > 0:
-            t_ref = time.time()
-            for i in name_set:
-                i_index = name_list.index(i)
-
-                if cpu_max < 100:
-                    cpu_percent = get_cpu_usage()
-                rem_thread = len(multiprocessing.active_children()) - original_thread_number
-                if print_flag:
-                    print('\r{} process, {:<2} cpu, {}/{} {}        '
-                       .format(rem_thread, cpu_percent, name_list.index(i) + 1 - rem_thread, total_len, ETA), end="")
-                
-                while rem_thread >= max_thread or cpu_percent >= cpu_max:
-                    if rem_thread < max_thread and cpu_percent < cpu_max:
-                        break
-                    time.sleep(0.1)
-                    if cpu_max < 100:
-                        cpu_percent = get_cpu_usage()
-                    rem_thread = len(multiprocessing.active_children()) - original_thread_number
-                    if print_flag:
-                        print('\r{} process, {:<2} cpu, {}/{} {}        '
-                           .format(rem_thread, cpu_percent, (name_list.index(i) + 1 - rem_thread), total_len, ETA), end="")
-                
-                p1_key = list(p1.keys()).copy()
-                if len(p1_key) > 64 or time.time() - t_ref > 1:
-                    t_ref = time.time()
-                    for process in p1_key:
-                        if not p1[process].is_alive():
-                            ETA = est.get()
-                            del alive1[process]
-                            del p1[process]
-                            
-                if alive1[i_index] == 1:
-                    if process_start_duration > 0:
-                        time.sleep(process_start_duration)
-                    p1[i_index] = Process(target=object_func, args=i)
-                    p1[i_index].start()
-
-            rem_thread = len(multiprocessing.active_children()) - original_thread_number
-            while rem_thread > 0:
-                if cpu_max < 100:
-                    cpu_percent = get_cpu_usage()
-                rem_thread = len(multiprocessing.active_children()) - original_thread_number
-                
-                p1_key = list(p1.keys()).copy()
-                for process in p1_key:
-                    if not p1[process].is_alive():
-                        ETA = est.get()
-                        del alive1[process]
-                        del p1[process]
-                time.sleep(1)
-                if print_flag:
-                    print('\r{} process, {:<2} cpu, {}/{} {}        '
-                       .format(rem_thread, cpu_percent, name_list.index(i) + 1 - rem_thread, total_len, ETA), end="")
             
-            p1_key = list(p1.keys()).copy()
-            while len(p1_key) > 0:
-                p1_key = list(p1.keys()).copy()
-                for process in p1_key:
-                    if not p1[process].is_alive():
-                        ETA = est.get()
-                        del alive1[process]
-                        del p1[process]
-            name_set = []
-            if print_flag:            
-                est.check(no_of_check=0, info=object_func.__name__)
+    def clean_process_and_get_cpu(self):
+        p1_key = list(self.p1.keys()).copy()
+        if len(p1_key) > 64 or time.time() - self.t_ref > 1:
+            self.t_ref = time.time()
+            self.cpu_percent = get_cpu_usage()
+            for process in p1_key:
+                if not self.p1[process].is_alive():
+                    self.ETA = self.est.get()
+                    del self.p1[process]
+                    
+    def start_process(self, process_num):
+        if self.process_start_duration > 0:
+            time.sleep(self.process_start_duration)
+        self.p1[process_num] = Process(target=self.run_func, args=(process_num,))
+        self.p1[process_num].start()
+    
+    def get_rem_thread_and_print(self,process_num):
+        self.rem_thread = len(multiprocessing.active_children()) - self.original_no_threads
+        if self.print_flag:
+            print('\r{} process, {:<2} cpu, {}/{} {}        '
+            .format(self.rem_thread, self.cpu_percent, process_num + 1 - self.rem_thread, self.total_len, self.ETA), end="")
+
+    def wait_for_threads(self, process_num):
+        while self.rem_thread >= self.max_thread or self.cpu_percent >= self.cpu_max:
+            if self.rem_thread < self.max_thread and self.cpu_percent < self.cpu_max:
+                break
+            time.sleep(0.1)
+            self.clean_process_and_get_cpu()
+            self.get_rem_thread_and_print(process_num)        
+    
+    def run_multiprocess(self):
+        self.return_dict = Manager().dict()
+                
+        self.ETA = ""
+        self.p1 = collections.defaultdict(lambda: 1)
+
+        self.total_len = len(self.parameter_dict.keys())
+        if self.print_flag:
+            print("")
+            
+        self.original_no_threads = len(multiprocessing.active_children())
+        self.est = time_est(len(self.parameter_list))
+        
+        self.cpu_percent = -1
+        self.t_ref = time.time()
+        
+        for process_num in self.parameter_dict:
+            self.get_rem_thread_and_print(process_num)
+            self.wait_for_threads(process_num)
+            self.clean_process_and_get_cpu()
+            self.start_process(process_num)
+
+        while self.rem_thread > 0: 
+            self.clean_process_and_get_cpu()
+            time.sleep(1)
+            self.get_rem_thread_and_print(process_num)
+
+        self.clean_process_and_get_cpu()
+        if self.print_flag:            
+            self.est.check(no_of_check=0, info=self.object_func.__name__)
+                
+        self.parameter_dict = {}
         self.parameter_list = []
+        
+    def data_to_json(self, data):
+        json_data = {}
+        data_type = {}
+
+        for i in data:
+            data_type[i] = str(type(data[i]))
+            if type(data[i]) == np.ndarray:
+                json_data[i] = data[i].tolist()
+            elif type(data[i]) == pd.core.frame.DataFrame:
+                json_data[i] = data[i].to_json()
+            else:
+                json_data[i] = data[i]
+
+        return json_data, data_type
+
+    def json_to_data(self, json_data, data_type):
+        data = {}
+
+        for i in json_data:
+            dtype = data_type[i]
+            if dtype == str(np.ndarray):
+                data[i] = np.array(json_data[i])
+            elif dtype == str(pd.core.frame.DataFrame):
+                data[i] = pd.read_json(json_data[i])
+            else:
+                data[i] = json_data[i]
+        return data
+
+
+    def auto_send(self, url, code, data, func_name):
+        json_data, data_type = self.data_to_json(data)
+        post_dict = {"code": code,
+                    "data":json_data,
+                    "data_type":data_type, 
+                    "func_name": func_name}
+        r = requests.post(url, json=post_dict)
+        receive = json.loads(r.text)
+        receive = self.json_to_data(receive["data"], receive["data_type"])
+        return receive
+
+    def list_to_dict(self, data):
+        data_dict = {v: k for v, k in enumerate(data)}
+        return data_dict
+
+    def dict_to_list(self, dict_data):
+        data = [dict_data[i] for i in list(dict_data)]
+        return data
