@@ -75,13 +75,13 @@ def get_cpu_usage():
             
 class MP():
 
-    def __init__(self, max_thread=64, process_start_duration=0, 
-                 cpu_max=95, servers=[]):
+    def __init__(self, max_process=64, process_start_duration=0, 
+                 max_cpu=95, servers=[]):
         self.servers = servers
         self.parameter_list = []
-        self.max_thread = max_thread
+        self.max_process = max_process
         self.process_start_duration = process_start_duration
-        self.cpu_max = cpu_max
+        self.max_cpu = max_cpu
         self.run_func = self.local_func
     
     def give(self,i):
@@ -163,8 +163,8 @@ class MP():
             .format(self.rem_thread, self.cpu_percent, process_num + 1 - self.rem_thread, self.total_len, self.ETA), end="")
 
     def wait_for_threads(self, process_num):
-        while self.rem_thread >= self.max_thread or self.cpu_percent >= self.cpu_max:
-            if self.rem_thread < self.max_thread and self.cpu_percent < self.cpu_max:
+        while self.rem_thread >= self.max_process or self.cpu_percent >= self.max_cpu:
+            if self.rem_thread < self.max_process and self.cpu_percent < self.max_cpu:
                 break
             time.sleep(0.1)
             self.clean_process_and_get_cpu()
